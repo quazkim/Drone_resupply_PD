@@ -13,7 +13,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
-from milp import build_milp, polish_fixed_incumbent, read_instance
+from MILP import build_milp, polish_fixed_incumbent, read_instance
 
 
 RESULT_FIELDS = [

@@ -166,8 +166,9 @@ struct PDPData {
         return (id == depotIndex);
     }
     
+    // Same threshold as MILP.py read_instance(): up to 20 customers -> 2, else 10.
     int getDroneCapacity() const {
-        if (numCustomers + 1 <= 20) return 2;
+        if (numCustomers <= 20) return 2;
         return 10;
     }
 };

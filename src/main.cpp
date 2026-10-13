@@ -79,6 +79,33 @@ static void writeEncodingFile(const string& path, const PDPSolution& sol) {
         }
         out << "END_ROUTE\n";
     }
+
+    // Machine-readable timeline comments for objective cross-validation.
+    // Existing encoding readers ignore comment lines, so this remains
+    // backwards compatible with the C++ decoder and Python tooling.
+    for (const auto& truck : sol.truck_details) {
+        for (int s = 0; s < (int)truck.route.size(); ++s) {
+            out << "# TRACE_TRUCK_STOP " << truck.truck_id << " " << s
+                << " " << truck.route[s]
+                << " " << truck.arrival_times[s]
+                << " " << truck.departure_times[s] << "\n";
+        }
+        out << "# TRACE_TRUCK_COMPLETION " << truck.truck_id
+            << " " << truck.completion_time << "\n";
+    }
+    for (int e = 0; e < (int)sol.resupply_events.size(); ++e) {
+        const auto& ev = sol.resupply_events[e];
+        out << "# TRACE_DRONE_EVENT " << ev.drone_id << " " << sortie[e]
+            << " " << ev.resupply_point
+            << " " << ev.drone_depart_time
+            << " " << ev.drone_arrive_time
+            << " " << ev.drone_return_time << "\n";
+    }
+    for (int d = 0; d < (int)sol.drone_completion_times.size(); ++d) {
+        out << "# TRACE_DRONE_COMPLETION " << d
+            << " " << sol.drone_completion_times[d] << "\n";
+    }
+    out << "# TRACE_CMAX " << sol.totalCost << "\n";
 }
 
 static SolutionEncoding diverseU10Fixture() {
@@ -181,7 +208,8 @@ int main(int argc, char* argv[]) {
         return valid ? 0 : 2;
     }
 
-    bool isSmall = (data.numCustomers + 1 <= 20);
+    // Small group = up to 20 customers, same threshold as getDroneCapacity().
+    bool isSmall = (data.numCustomers <= 20);
     if (timeLimit < 0) timeLimit = isSmall ? 150.0 : 3600.0;
 
     const string depotNames[] = {"center", "border", "outside"};

@@ -33,7 +33,7 @@ int main(int argc, char* argv[]) {
         std::string tag;
         row >> tag;
         if (tag.empty() || tag[0] == '#') continue;
-        if (tag == "MILP_CMAX") continue;
+        if (tag == "MILP_CMAX" || tag == "HEURISTIC_CMAX") continue;
         if (tag == "ROUTE") {
             encoding.emplace_back();
             current = &encoding.back();
@@ -73,9 +73,10 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    const bool verbose = argc == 5 && std::stoi(argv[4]) != 0;
     const PDPSolution solution = decode_solution(encoding, data, false);
-    const bool valid = validateSolution(solution, data, false);
-    if (argc == 5 && std::stoi(argv[4]) != 0) {
+    const bool valid = validateSolution(solution, data, verbose);
+    if (verbose) {
         print_decoded_routes(solution, data);
     }
     std::cout << std::fixed << std::setprecision(9)

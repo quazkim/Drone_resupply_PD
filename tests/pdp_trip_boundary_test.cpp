@@ -33,6 +33,16 @@ void expectFeasible(const char* name, const SolutionEncoding& encoding,
     }
 }
 
+void expectDroneCapacity(int customers, int expected) {
+    PDPData data;
+    data.numCustomers = customers;
+    if (data.getDroneCapacity() != expected) {
+        std::cerr << "drone capacity for " << customers << " customers: expected "
+                  << expected << ", got " << data.getDroneCapacity() << "\n";
+        std::exit(EXIT_FAILURE);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -67,6 +77,11 @@ int main() {
     expectFeasible("drone endurance includes handover",
                    {Route{RouteStop(0), RouteStop(1, {1}), RouteStop(0)}},
                    endurance, false);
+
+    // Threshold must match MILP.py: <= 20 customers -> 2, otherwise 10.
+    expectDroneCapacity(10, 2);
+    expectDroneCapacity(20, 2);
+    expectDroneCapacity(21, 10);
 
     return EXIT_SUCCESS;
 }

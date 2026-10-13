@@ -1,0 +1,414 @@
+name: Cross-check MILP vs Heuristic
+
+# Runs the heuristic (pdp_solver) and the MILP (MILP.py + CPLEX) at the same time,
+# each on its own runner so they never compete for CPU, then compares them:
+#   heuristic : solve -> export encoding -> decode with the C++ validator
+#   milp      : solve -> polish timing  -> export encoding -> decode with the C++ validator
+#   compare   : heuristic vs MILP objective, decoder validity/feasibility, gap
+#   verify    : feed each heuristic solution into the REAL MILP.py (all discrete
+#               decisions fixed) and require feasibility + equal C_max
+#
+# The MILP needs a FULL CPLEX (see .github/actions/setup-cplex). Without the
+# CPLEX_INSTALLER_URL secret or a self-hosted runner that already has CPLEX,
+# the milp/verify jobs stop at the "Verify CPLEX" step on purpose.
+
+# Triggers
+#   workflow_dispatch : needs this file on the DEFAULT branch; every parameter is an input.
+#   push to ci/cross-check : works from a non-default branch.
+#       plain push           -> smoke run (n=10, 60 s per method)
+#       commit message with [full] -> full run (n=10/15/20, heuristic 300 s, MILP 3600 s)
+#   Start a full run with:  git commit --allow-empty -m "run [full]" && git push
+
+on:
+  push:
+    branches: ['ci/cross-check']
+  workflow_dispatch:
+    inputs:
+      sizes:
+        description: 'Customer counts to run, space separated (15 instances per size)'
+        required: true
+        default: '10 15 20'
+      heuristic_time:
+        description: 'Heuristic wall-clock budget per instance (integer seconds)'
+        required: true
+        default: '300'
+      milp_time:
+        description: 'MILP wall-clock budget per instance (integer seconds)'
+        required: true
+        default: '3600'
+      polish_time:
+        description: 'MILP timing re-optimisation after the incumbent is fixed (integer seconds)'
+        required: true
+        default: '30'
+      max_truck_trips:
+        description: 'Max truck trips per truck in the MILP'
+        required: true
+        default: '2'
+      verify_on_milp:
+        description: 'Also check heuristic solutions against the real MILP.py'
+        required: true
+        default: true
+        type: boolean
+      verify_time:
+        description: 'Time limit for each fixed-decision MILP check (s)'
+        required: true
+        default: '600'
+      milp_runner:
+        description: 'runs-on for CPLEX jobs, as JSON (e.g. "ubuntu-22.04" or ["self-hosted","cplex"])'
+        required: true
+        default: '"ubuntu-22.04"'
+      max_parallel:
+        description: 'Max concurrent matrix jobs per job group (heuristic and milp run side by side; free plan allows 20 jobs in total)'
+        required: true
+        default: '10'
+
+env:
+  OR_TOOLS_VERSION: "9.11.4210"
+  OR_TOOLS_URL: "https://github.com/google/or-tools/releases/download/v9.11/or-tools_amd64_ubuntu-22.04_cpp_v9.11.4210.tar.gz"
+  OR_TOOLS_DIR: "/opt/or-tools"
+
+jobs:
+  plan:
+    name: Plan (list instances)
+    runs-on: ubuntu-22.04
+    outputs:
+      instances: ${{ steps.list.outputs.instances }}
+      heuristic_time: ${{ steps.params.outputs.heuristic_time }}
+      milp_time: ${{ steps.params.outputs.milp_time }}
+      polish_time: ${{ steps.params.outputs.polish_time }}
+      trips: ${{ steps.params.outputs.trips }}
+      verify: ${{ steps.params.outputs.verify }}
+      verify_time: ${{ steps.params.outputs.verify_time }}
+      runner: ${{ steps.params.outputs.runner }}
+      parallel: ${{ steps.params.outputs.parallel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: params
+        env:
+          EVENT: ${{ github.event_name }}
+          MSG: ${{ github.event.head_commit.message }}
+          IN_SIZES: ${{ inputs.sizes }}
+          IN_HT: ${{ inputs.heuristic_time }}
+          IN_MT: ${{ inputs.milp_time }}
+          IN_POLISH: ${{ inputs.polish_time }}
+          IN_TRIPS: ${{ inputs.max_truck_trips }}
+          IN_VERIFY: ${{ inputs.verify_on_milp }}
+          IN_VT: ${{ inputs.verify_time }}
+          IN_RUNNER: ${{ inputs.milp_runner }}
+          IN_PAR: ${{ inputs.max_parallel }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" = workflow_dispatch ]; then
+            mode=dispatch
+            sizes=$IN_SIZES; ht=$IN_HT; mt=$IN_MT; polish=$IN_POLISH; trips=$IN_TRIPS
+            verify=$IN_VERIFY; vt=$IN_VT; runner=$IN_RUNNER; par=$IN_PAR
+          else
+            runner='"ubuntu-22.04"'; polish=30; trips=2; verify=true; vt=600; par=10
+            if [[ "$MSG" == *"[full]"* ]]; then
+              mode=full; sizes="10 15 20"; ht=300; mt=3600
+            else
+              mode=smoke; sizes="10"; ht=60; mt=60
+            fi
+          fi
+          {
+            echo "sizes=$sizes"; echo "heuristic_time=$ht"; echo "milp_time=$mt"
+            echo "polish_time=$polish"; echo "trips=$trips"; echo "verify=$verify"
+            echo "verify_time=$vt"; echo "runner=$runner"; echo "parallel=$par"
+          } >> "$GITHUB_OUTPUT"
+          echo "mode=$mode sizes='$sizes' heuristic=${ht}s milp=${mt}s runner=$runner" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - id: list
+        env:
+          SIZES: ${{ steps.params.outputs.sizes }}
+        run: |
+          set -euo pipefail
+          cd Instance/Instance
+          files=""
+          for n in $SIZES; do
+            [[ "$n" =~ ^[0-9]+$ ]] || { echo "::error::bad size '$n'"; exit 1; }
+            files="$files $(ls U_${n}_*_pd.txt)"
+          done
+          list=$(printf '%s\n' $files | jq -R -s -c 'split("\n")[:-1]')
+          echo "instances=$list" >> "$GITHUB_OUTPUT"
+          echo "$list" | jq -r 'length | "instances: \(.)"'
+
+  build:
+    name: Build (pdp_solver + pdp_decode_encoding)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache OR-Tools
+        id: cache-ortools
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OR_TOOLS_DIR }}
+          key: ortools-${{ env.OR_TOOLS_VERSION }}-ubuntu-22.04
+
+      - name: Download & install OR-Tools
+        if: steps.cache-ortools.outputs.cache-hit != 'true'
+        run: |
+          wget -q "$OR_TOOLS_URL" -O or-tools.tar.gz
+          sudo mkdir -p "$OR_TOOLS_DIR"
+          sudo tar -xzf or-tools.tar.gz -C "$OR_TOOLS_DIR" --strip-components=1
+          rm or-tools.tar.gz
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y cmake g++ libz-dev
+
+      - name: Configure and build
+        run: |
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_PREFIX_PATH="$OR_TOOLS_DIR"
+          cmake --build build --target pdp_solver pdp_decode_encoding -j4
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: |
+            pdp_solver
+            build/pdp_decode_encoding
+          retention-days: 1
+
+  heuristic:
+    name: Heuristic ${{ matrix.instance }}
+    needs: [plan, build]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
+      matrix:
+        instance: ${{ fromJSON(needs.plan.outputs.instances) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: .
+
+      - name: Cache OR-Tools
+        id: cache-ortools
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.OR_TOOLS_DIR }}
+          key: ortools-${{ env.OR_TOOLS_VERSION }}-ubuntu-22.04
+
+      - name: Download OR-Tools (cache miss)
+        if: steps.cache-ortools.outputs.cache-hit != 'true'
+        run: |
+          wget -q "$OR_TOOLS_URL" -O or-tools.tar.gz
+          sudo mkdir -p "$OR_TOOLS_DIR"
+          sudo tar -xzf or-tools.tar.gz -C "$OR_TOOLS_DIR" --strip-components=1
+          rm or-tools.tar.gz
+
+      - name: Run heuristic and decode its solution
+        env:
+          INST: ${{ matrix.instance }}
+          T: ${{ needs.plan.outputs.heuristic_time }}
+        run: |
+          set -uo pipefail
+          chmod +x pdp_solver build/pdp_decode_encoding
+          export LD_LIBRARY_PATH="$OR_TOOLS_DIR/lib:${LD_LIBRARY_PATH:-}"
+          mkdir -p out
+          ./pdp_solver "Instance/Instance/$INST" --depot 1 --time "$T" --run 1 \
+            --encoding-output out/encoding.txt > out/solver.log 2>&1
+          echo "solver exit=$?"
+          build/pdp_decode_encoding "Instance/Instance/$INST" out/encoding.txt > out/decode.log 2>&1
+          grep DECODE_RESULT out/decode.log | tee out/decode.txt
+          grep -q "DECODE_RESULT valid=1 feasible=1" out/decode.txt
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heuristic-${{ matrix.instance }}
+          path: out/
+          retention-days: 7
+
+  milp:
+    name: MILP ${{ matrix.instance }}
+    needs: [plan, build]
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(needs.plan.outputs.parallel) }}
+      matrix:
+        instance: ${{ fromJSON(needs.plan.outputs.instances) }}
+    env:
+      CPLEX_INSTALLER_URL: ${{ secrets.CPLEX_INSTALLER_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: .
+
+      - uses: ./.github/actions/setup-cplex
+        with:
+          installer-url: ${{ env.CPLEX_INSTALLER_URL }}
+
+      - name: Solve MILP, polish timing, decode with C++ validator
+        env:
+          INST: ${{ matrix.instance }}
+          T: ${{ needs.plan.outputs.milp_time }}
+          POLISH: ${{ needs.plan.outputs.polish_time }}
+          TRIPS: ${{ needs.plan.outputs.trips }}
+        run: |
+          chmod +x build/pdp_decode_encoding
+          # hard stop: solver budget + model build + polish + slack
+          timeout "$(( T + POLISH + 900 ))" python batch_validate_milp.py \
+            --instances Instance/Instance --pattern "$INST" \
+            --time "$T" --polish-time "$POLISH" --max-truck-trips "$TRIPS" \
+            --decoder build/pdp_decode_encoding \
+            --jobs 1 --threads-per-job "$(nproc)" --output out --fresh
+          cat out/summary.csv
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: milp-${{ matrix.instance }}
+          path: out/
+          retention-days: 7
+
+  verify:
+    name: Verify heuristic solutions on real MILP.py
+    if: ${{ !cancelled() && needs.plan.outputs.verify == 'true' }}
+    needs: [plan, heuristic]
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: 350
+    env:
+      CPLEX_INSTALLER_URL: ${{ secrets.CPLEX_INSTALLER_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: heuristic-*
+          path: artifacts
+
+      - uses: ./.github/actions/setup-cplex
+        with:
+          installer-url: ${{ env.CPLEX_INSTALLER_URL }}
+
+      - name: Fix every discrete decision of each heuristic solution in MILP.py
+        env:
+          VERIFY_TIME: ${{ needs.plan.outputs.verify_time }}
+        run: |
+          set -o pipefail   # keep python's exit code through tee
+          python - <<'PYEOF' | tee -a "$GITHUB_STEP_SUMMARY"
+          import glob, os, sys
+          from pathlib import Path
+          from MILP import build_milp, read_instance
+          from check_heuristic_milp_fitness import fix_decisions, parse_encoding, route_decisions
+
+          limit = float(os.environ["VERIFY_TIME"])
+          failures = 0
+          print("## Heuristic solutions on the real MILP.py (discrete decisions fixed)\n")
+          print("| Instance | Heuristic C_max | MILP C_max | Delta | Result |")
+          print("|---|---|---|---|---|")
+          for enc in sorted(glob.glob("artifacts/heuristic-*/encoding.txt")):
+              inst = os.path.basename(os.path.dirname(enc))[len("heuristic-"):]
+              h_cmax, routes = parse_encoding(Path(enc))
+              _, _, trips = route_decisions(routes)
+              model = build_milp(read_instance(Path("Instance/Instance") / inst, "border"),
+                                 time_limit=limit, log_output=False, max_truck_trips=trips)
+              model.context.cplex_parameters.threads = 1
+              try:
+                  fix_decisions(model, routes)
+                  sol = model.solve(log_output=False)
+                  m_cmax = None if sol is None else float(sol.objective_value)
+                  status = str(model.solve_details.status)
+              finally:
+                  model.end()
+              if m_cmax is None:
+                  result, delta = f"FAIL: MILP rejects it ({status})", "-"
+                  failures += 1
+              elif abs(m_cmax - h_cmax) > 1e-6:
+                  result, delta = "FAIL: objective mismatch", f"{m_cmax - h_cmax:+.3e}"
+                  failures += 1
+              else:
+                  result, delta = "ok", f"{m_cmax - h_cmax:+.1e}"
+              print(f"| {inst} | {h_cmax:.6f} | {'-' if m_cmax is None else format(m_cmax, '.6f')} | {delta} | {result} |",
+                    flush=True)
+          print(f"\n**{failures} failure(s)**")
+          sys.exit(1 if failures else 0)
+          PYEOF
+
+  compare:
+    name: Compare heuristic vs MILP
+    if: ${{ !cancelled() }}
+    needs: [heuristic, milp]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Build comparison table
+        run: |
+          python3 - <<'PYEOF' >> "$GITHUB_STEP_SUMMARY"
+          import csv, glob, os, re, sys
+
+          pat = re.compile(r"DECODE_RESULT valid=(\d+) feasible=(\d+) cmax=([0-9.eE+-]+) penalty=([0-9.eE+-]+)")
+          fails, gaps = [], []
+          print("## MILP vs heuristic\n")
+          print("| Instance | Heuristic | MILP | Gap (H vs M) | Heuristic decode | MILP decode | Status |")
+          print("|---|---|---|---|---|---|---|")
+          for hdir in sorted(glob.glob("artifacts/heuristic-*")):
+              inst = os.path.basename(hdir)[len("heuristic-"):]
+              problems, h_cmax, m_cmax = [], None, None
+
+              m = pat.search(open(f"{hdir}/decode.txt").read()) if os.path.exists(f"{hdir}/decode.txt") else None
+              if m is None:
+                  h_dec = "no result"; problems.append("FAIL heuristic produced no decodable solution")
+              else:
+                  h_cmax = float(m[3])
+                  h_dec = f"valid={m[1]} feasible={m[2]}"
+                  if m[1] != "1" or m[2] != "1":
+                      problems.append("FAIL heuristic solution invalid")
+                  first = open(f"{hdir}/encoding.txt").readline().split()
+                  if first and first[0] == "HEURISTIC_CMAX" and abs(float(first[1]) - h_cmax) > 1e-6:
+                      problems.append("FAIL heuristic C_max differs from its own decode")
+
+              mpath = f"artifacts/milp-{inst}/summary.csv"
+              m_dec = "no result"
+              if os.path.exists(mpath):
+                  row = next(csv.DictReader(open(mpath)), None)
+                  if row and row.get("milp_cmax"):
+                      m_cmax = float(row["milp_cmax"])
+                      m_dec = f"valid={row['decode_valid']} feasible={row['decode_feasible']} ({row['milp_status']})"
+                      if row["decode_valid"] != "1" or row["decode_feasible"] != "1":
+                          problems.append("FAIL MILP solution rejected by decoder")
+                      if row.get("note"):
+                          problems.append(f"FAIL {row['note']}")
+                  elif row:
+                      m_dec = row.get("milp_status", "no incumbent")
+                      problems.append("WARN MILP found no incumbent")
+              else:
+                  problems.append("WARN no MILP result")
+
+              gap = ""
+              if h_cmax is not None and m_cmax:
+                  g = (h_cmax - m_cmax) / m_cmax * 100
+                  gaps.append(g)
+                  gap = f"{g:+.2f}%"
+              status = "; ".join(problems) or "ok"
+              if any(p.startswith("FAIL") for p in problems):
+                  fails.append(inst)
+              print(f"| {inst} | {'-' if h_cmax is None else format(h_cmax, '.3f')} | "
+                    f"{'-' if m_cmax is None else format(m_cmax, '.3f')} | {gap} | {h_dec} | {m_dec} | {status} |")
+
+          print()
+          total = len(glob.glob('artifacts/heuristic-*'))
+          print(f"- Instances: {total}, with MILP incumbent: {len(gaps)}, "
+                f"without: {total - len(gaps)}")
+          if gaps:
+              print(f"- Mean gap (negative = heuristic better): {sum(gaps)/len(gaps):+.2f}%")
+          print(f"- Hard failures: {len(fails)}")
+          sys.exit(1 if fails else 0)
+          PYEOF
