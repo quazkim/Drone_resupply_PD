@@ -72,13 +72,59 @@ Chương trình được phát triển nhằm:
 
 \subsection{Định nghĩa bài toán}
 
-Cho một đồ thị $G = (V, E)$ với:
-\begin{itemize}
-    \item $V = \{0\} \cup C_P \cup C_{DL} \cup C_D$: Tập đỉnh bao gồm depot (0) và các khách hàng
-    \item $C_P$: Tập các điểm pickup
-    \item $C_{DL}$: Tập các điểm delivery tương ứng với pickup
-    \item $C_D$: Tập các khách hàng drone-eligible (có thể được phục vụ qua drone resupply)
-\end{itemize}
+Bài toán xét một đội xe tải (truck) và drone xuất phát từ depot $0$ để phục vụ tập
+khách hàng $N$. Mỗi khách hàng được xe tải ghé đúng một lần. Với khách hàng giao hàng
+trực tiếp $i \in N^D$ (loại \texttt{D}), kiện hàng của $i$ có thể được chất lên xe tải
+tại depot đầu một chuyến truck, hoặc được drone mang từ depot tới một điểm hẹn trên
+hành trình truck. Kiện loại \texttt{D} (gọi tắt C1) phải được giao trước khi truck
+quay lại depot kết thúc chuyến đã nhận kiện đó. Với cặp pickup--delivery
+$(p,\ell)\in\mathcal A$ (loại \texttt{P}/\texttt{DL}, gọi tắt C2), pickup $p$ và
+delivery $\ell$ phải nằm trên cùng một truck, và delivery phải nằm sau pickup trong
+toàn hành trình của truck đó.
+
+Mỗi truck có thể đi nhiều chuyến, mỗi chuyến có dạng $0 \to \cdots \to 0$. Khi truck
+quay lại depot để bắt đầu chuyến tiếp theo, truck không bắt buộc phải rỗng: hàng đã
+pickup ở một khách hàng (C2) có thể được giữ trên truck để giao cho delivery tương ứng
+ở chuyến sau, miễn là capacity truck luôn được tôn trọng; hàng C1 thì không được phép
+đi qua một lần quay về depot như vậy. Lần xuất phát đầu tiên từ depot không tính thời
+gian bốc dỡ truck; từ chuyến thứ hai trở đi có tính thời gian bốc dỡ tại depot
+$\delta_T$. Lần cuối truck quay về depot để kết thúc hành trình không tính thêm thời
+gian bốc dỡ.
+
+Mỗi chuyến drone chỉ có \emph{một} điểm hẹn với một truck tại một khách hàng (mô hình
+\emph{one-rendezvous}): drone xuất phát từ depot, bay tới điểm hẹn $h$, bàn giao hàng
+cho truck, rồi quay về depot ($0 \to h \to 0$); mô hình không dùng multi-rendezvous
+cho drone (drone không tiếp tục bay tới một truck/điểm hẹn thứ hai trong cùng chuyến
+bay). Đây là điểm khác biệt chính so với mô hình VRP-MRDR (multi-rendezvous) được đề
+xuất gần đây bởi Tran et al. (2026) -- xem mục~\ref{sec:related-work}.
+
+\subsection{Công trình liên quan}
+\label{sec:related-work}
+
+Bài toán truck--drone resupply với release date (khác với drone giao hàng trực tiếp)
+được giới thiệu bởi Pina-Pardo, Silva \& Smith (2021), với 1 truck, 1 drone,
+uncapacitated truck, mục tiêu minimize makespan, giải bằng MILP kết hợp decomposition.
+Pina-Pardo et al. (2024a) mở rộng sang nhiều drone (dynamic). Pina-Pardo et al.
+(2024b) mở rộng tiếp sang nhiều truck và nhiều drone có capacity (\emph{Fleet resupply
+by drones for last-mile delivery}), vẫn trong mô hình \emph{một rendezvous} mỗi chuyến
+bay -- đây là mô hình gần nhất với bài toán được xét trong báo cáo này.
+
+Gần đây, Tran, Nguyen, Binh, Tran \& Nguyen (2026, \emph{Transportation Research Part
+E}) đề xuất VRP-MRDR (\emph{Vehicle Routing Problem with Release Dates and
+Multi-Rendezvous Drone Resupply}), cho phép một drone tiếp tế tuần tự \textbf{nhiều}
+truck trong cùng một chuyến bay, cùng với một MILP đầy đủ và một framework Adaptive
+Tabu Search (ATS) hai lớp (routing + loading subproblem bằng CP-SAT). Kiến trúc
+TS-ALNS-LSP của mục~\ref{sec:algorithm} được xây dựng theo đúng tinh thần của ATS
+trong bài báo này, nhưng hiện mới chỉ hỗ trợ one-rendezvous (mục~2); mở rộng sang
+multi-rendezvous là một hướng phát triển trực tiếp (xem mục~\ref{sec:future-work}).
+
+\paragraph{Khoảng cách và vận tốc.} Truck dùng khoảng cách Manhattan, vận tốc $30$
+km/h. Drone dùng khoảng cách Euclidean, vận tốc $60$ km/h. Thời gian di chuyển tính
+theo phút:
+\[
+  t^T_{ij}=\frac{|x_i-x_j|+|y_i-y_j|}{30}\cdot 60,\qquad
+  t^D_{ij}=\frac{\sqrt{(x_i-x_j)^2+(y_i-y_j)^2}}{60}\cdot 60.
+\]
 
 \subsection{Các thông số đầu vào}
 
@@ -119,188 +165,497 @@ Depot Outside & (-10.0, 10.0) & Depot ngoài khu vực \\
 \end{tabular}
 \end{table}
 
-\subsection{Mô hình One-Rendezvous}
-
-Trong mô hình One-Rendezvous, quy trình drone resupply diễn ra như sau:
-
-\begin{enumerate}
-    \item \textbf{Load tại Depot}: Drone load các packages (có thể nhiều packages nếu consolidation) tại depot sau khi tất cả packages đã ready
-    \item \textbf{Bay đến điểm hẹn}: Drone bay theo đường thẳng (Euclidean) đến điểm hẹn (resupply point)
-    \item \textbf{Resupply}: Drone giao TẤT CẢ packages cho truck tại điểm hẹn duy nhất
-    \item \textbf{Quay về Depot}: Drone bay về depot để sẵn sàng cho chuyến tiếp theo
-    \item \textbf{Truck giao hàng}: Truck nhận packages và đi giao cho từng khách hàng
-\end{enumerate}
-
-\subsection{Hàm mục tiêu}
-
-Mục tiêu là tối thiểu hóa makespan:
-\begin{equation}
-    \min C_{max} = \max\left\{\max_{k \in K} T_k^{end}, \max_{d \in D} T_d^{return}\right\}
-\end{equation}
-
-Trong đó:
-\begin{itemize}
-    \item $T_k^{end}$: Thời gian xe tải $k$ hoàn thành và về depot
-    \item $T_d^{return}$: Thời gian drone $d$ quay về depot sau chuyến cuối
-\end{itemize}
-
-\subsection{Các ràng buộc}
-
-\begin{enumerate}
-    \item \textbf{Ràng buộc PDP}: Với mỗi cặp $(P_i, DL_i)$, pickup phải được thực hiện trước delivery
-    \item \textbf{Ràng buộc Capacity}: Tải trọng xe không vượt quá $Q_t$
-    \item \textbf{Ràng buộc Endurance}: Tổng thời gian bay của drone không vượt quá $E$
-    \item \textbf{Ràng buộc Ready Time}: Không thể phục vụ khách hàng trước ready time
-    \item \textbf{Ràng buộc Drone Capacity}: Số packages trong một chuyến drone $\leq Q_d$
-\end{enumerate}
-
-%==============================================================================
-\section{Thuật toán Giải}
-%==============================================================================
-
-\subsection{Tổng quan thuật toán lai ghép GA + Tabu Search}
-
-Thuật toán sử dụng Genetic Algorithm làm framework chính, kết hợp với Tabu Search để intensification khi GA bị stagnation.
-
-\begin{algorithm}[H]
-\caption{GA + Tabu Search cho PDP-DR}
-\begin{algorithmic}[1]
-\STATE \textbf{Input:} Instance data, GA parameters
-\STATE \textbf{Output:} Best solution
-\STATE
-\STATE Initialize population $P$ with diverse methods
-\STATE Evaluate fitness for all individuals
-\STATE $best \leftarrow$ best individual in $P$
-\STATE $stagnation \leftarrow 0$
-\STATE
-\FOR{$gen = 1$ to $maxGen$}
-    \STATE Selection using tournament
-    \STATE Apply crossover operators adaptively
-    \STATE Apply mutation operators adaptively
-    \STATE Evaluate new individuals
-    \STATE Update $best$ if improved
-    \STATE
-    \IF{no improvement}
-        \STATE $stagnation \leftarrow stagnation + 1$
-    \ELSE
-        \STATE $stagnation \leftarrow 0$
-    \ENDIF
-    \STATE
-    \IF{$stagnation \geq threshold$}
-        \STATE Apply Tabu Search on top individuals
-        \STATE Inject improved solutions into population
-        \STATE $stagnation \leftarrow 0$
-    \ENDIF
-    \STATE
-    \STATE Adapt mutation rate and operator probabilities
-\ENDFOR
-\STATE
-\RETURN $best$
-\end{algorithmic}
-\end{algorithm}
-
-\subsection{Biểu diễn lời giải (Encoding)}
-
-Mỗi cá thể được biểu diễn dưới dạng \textbf{sequence} - một hoán vị của các khách hàng:
-\begin{equation}
-    chromosome = [c_1, c_2, ..., c_n]
-\end{equation}
-
-Trong đó $c_i \in C_P \cup C_{DL} \cup C_D$ là các khách hàng cần phục vụ.
-
-\textbf{Lưu ý quan trọng}: Encoding không sử dụng separator giữa các xe. Việc phân chia công việc cho các xe được thực hiện trong hàm decode.
-
-\subsection{Khởi tạo quần thể đa dạng}
-
-Quần thể được khởi tạo với 4 phương pháp khác nhau để đảm bảo diversity:
+\subsection{Tập chỉ số và tham số}
 
 \begin{table}[H]
 \centering
-\caption{Phân bố khởi tạo quần thể (Population size = 200)}
-\begin{tabular}{lcc}
+\begin{tabular}{ll}
 \toprule
-\textbf{Phương pháp} & \textbf{Số lượng} & \textbf{Tỷ lệ} \\
+Ký hiệu & Ý nghĩa\\
 \midrule
-Random & 20 & 10\% \\
-Greedy Time & 60 & 30\% \\
-Sweep & 60 & 30\% \\
-Nearest Neighbor & 60 & 30\% \\
+$0$ & depot\\
+$N$ & tập khách hàng\\
+$N^D$ & tập khách hàng giao hàng trực tiếp, loại \texttt{D} (C1)\\
+$N^P$ & tập node pickup, loại \texttt{P}\\
+$N^{DL}$ & tập node delivery của pickup--delivery, loại \texttt{DL}\\
+$\mathcal A$ & tập cặp pickup--delivery $(p,\ell)$ (C2)\\
+$K$ & tập truck\\
+$R$ & tập drone\\
+$H=\{1,\ldots,H_{\max}\}$ & tập chuyến tiềm năng của mỗi truck\\
+$P=\{1,\ldots,P_{\max}\}$ & tập vị trí tiềm năng trong một chuyến truck\\
+$S=\{1,\ldots,S_{\max}\}$ & tập chuyến bay tiềm năng của mỗi drone\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{Các toán tử di truyền}
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Ký hiệu & Ý nghĩa\\
+\midrule
+$q_i$ & khối lượng kiện hàng của khách $i$\\
+$r_i$ & release date của kiện hàng $i$\\
+$Q_T$ & tải trọng truck\\
+$Q_D$ & tải trọng drone\\
+$s_T$ & thời gian truck phục vụ một khách hàng\\
+$\delta_m$ & thời gian bàn giao drone--truck tại điểm hẹn\\
+$\delta_d$ & thời gian drone chất hàng tại depot trước mỗi chuyến bay\\
+$\delta_T$ & thời gian truck bốc dỡ tại depot trước chuyến truck thứ hai trở đi\\
+$E$ & endurance tối đa của một chuyến bay drone\\
+$M$ & hằng số Big-M đủ lớn\\
+$t^T_{ij}$ & thời gian truck đi từ $i$ đến $j$\\
+$t^D_{ij}$ & thời gian drone bay từ $i$ đến $j$\\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\subsubsection{Toán tử lai ghép (Crossover)}
+\subsection{Biến quyết định}
 
-Chương trình sử dụng 4 loại crossover với xác suất adaptive:
+\textbf{Route truck.}
+\[
+y_{kmpi}=\begin{cases}1, & \text{truck }k\text{ phục vụ khách }i\text{ ở vị trí }p\text{ trong chuyến }m,\\0, & \text{ngược lại,}\end{cases}
+\qquad
+u_{kmp}=\begin{cases}1, & \text{vị trí }p\text{ của chuyến }m\text{ của truck }k\text{ được dùng,}\\0, & \text{ngược lại,}\end{cases}
+\]
+\[
+g_{km}=\begin{cases}1, & \text{chuyến }m\text{ của truck }k\text{ được dùng,}\\0, & \text{ngược lại,}\end{cases}
+\qquad
+z_{kmpij}=\begin{cases}1, & i\text{ ở vị trí }p\text{ và }j\text{ ở }p+1\text{ trong chuyến }m\text{ của truck }k,\\0, & \text{ngược lại,}\end{cases}
+\]
+\[
+\lambda_{kmpi}=\begin{cases}1, & i\text{ là khách cuối của chuyến }m\text{ của truck }k\text{ tại vị trí }p,\\0, & \text{ngược lại.}\end{cases}
+\]
 
-\begin{enumerate}
-    \item \textbf{Order Crossover (OX)}: Giữ nguyên một đoạn từ parent 1, điền phần còn lại theo thứ tự từ parent 2
-    \item \textbf{Partially Mapped Crossover (PMX)}: Tạo mapping giữa hai đoạn, áp dụng mapping để tạo offspring
-    \item \textbf{Cycle Crossover (CX)}: Xác định các cycle trong hai parents, luân phiên lấy từ mỗi parent
-    \item \textbf{Edge Recombination}: Giữ các cạnh (edges) từ cả hai parents
-\end{enumerate}
+\textbf{Nguồn hàng và drone.}
+\[
+a_{kmi}=\begin{cases}1, & \text{kiện C1 }i\text{ chất lên truck }k\text{ tại depot đầu chuyến }m,\\0, & \text{ngược lại,}\end{cases}
+\qquad
+b_{kmpi}=\begin{cases}1, & \text{kiện C1 }i\text{ drone giao cho truck }k\text{ tại vị trí }p\text{ của chuyến }m,\\0, & \text{ngược lại,}\end{cases}
+\]
+\[
+\rho_{kmp}=\begin{cases}1, & \text{có chuyến drone hẹn truck }k\text{ tại vị trí }p\text{ của chuyến }m,\\0, & \text{ngược lại,}\end{cases}
+\qquad
+w_{dskmpj}=\begin{cases}1, & \text{chuyến bay }s\text{ của drone }d\text{ gặp truck }k\text{ trong chuyến }m\text{ tại vị trí }p\text{, node }j,\\0, & \text{ngược lại,}\end{cases}
+\]
+\[
+\eta_{ds}=\begin{cases}1, & \text{chuyến bay }s\text{ của drone }d\text{ được dùng,}\\0, & \text{ngược lại.}\end{cases}
+\]
 
-\subsubsection{Toán tử đột biến (Mutation)}
+\textbf{Thời gian và tải.} $T^0_{km}, A_{kmp}, D_{kmp}, B_{km} \ge 0$ lần lượt là
+thời điểm truck $k$ rời depot bắt đầu chuyến $m$, thời điểm đến/rời vị trí $p$, và
+thời điểm truck quay về depot kết thúc chuyến $m$. $F^{dep}_{ds}, F^{arr}_{ds},
+F^{ret}_{ds} \ge 0$ là thời điểm drone $d$ khởi hành/đến điểm hẹn/quay về depot ở
+chuyến bay $s$. $L_{kmp}, L^{end}_{km} \ge 0$ là tải trên truck $k$ sau khi rời vị trí
+$p$ (và khi kết thúc chuyến $m$) -- tải còn lại cuối chuyến chỉ có thể là hàng pickup
+C2 chưa tới delivery tương ứng. $C_{\max} \ge 0$ là makespan.
 
-5 loại mutation được sử dụng:
-
-\begin{enumerate}
-    \item \textbf{Swap}: Hoán đổi vị trí của 2 gen
-    \item \textbf{Insert}: Di chuyển một gen đến vị trí khác
-    \item \textbf{Inversion}: Đảo ngược một đoạn sequence
-    \item \textbf{Scramble}: Xáo trộn ngẫu nhiên một đoạn
-    \item \textbf{Or-opt}: Di chuyển một chuỗi liên tiếp các gen
-\end{enumerate}
-
-\subsection{Cơ chế Adaptive}
-
-Xác suất sử dụng các toán tử được điều chỉnh dựa trên success rate:
+\subsection{Hàm mục tiêu}
 
 \begin{equation}
-    P_i^{new} = P_i^{old} + \alpha \cdot (SR_i - \overline{SR})
+  \min C_{\max}.
 \end{equation}
 
-Trong đó:
+\subsection{Các ràng buộc}
+
+\subsubsection{Cấu trúc route truck nhiều chuyến}
+
+\begin{equation}
+  \sum_{i\in N} y_{kmpi}=u_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  u_{kmp}\le g_{km}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  u_{km,p+1}\le u_{kmp}, \qquad \forall k\in K,\ m\in H,\ p=1,\ldots,P_{\max}-1.
+\end{equation}
+\begin{equation}
+  g_{k,m+1}\le g_{km}, \qquad \forall k\in K,\ m=1,\ldots,H_{\max}-1.
+\end{equation}
+\begin{equation}
+  \sum_{k\in K}\sum_{m\in H}\sum_{p\in P} y_{kmpi}=1, \qquad \forall i\in N.
+\end{equation}
+\begin{equation}
+  z_{kmpij}\le y_{kmpi},\quad z_{kmpij}\le y_{km,p+1,j},\quad z_{kmpij}\ge y_{kmpi}+y_{km,p+1,j}-1,
+\end{equation}
+\[
+  \forall k\in K,\ m\in H,\ p=1,\ldots,P_{\max}-1,\ i,j\in N.
+\]
+\begin{equation}
+  \lambda_{kmpi}\le y_{kmpi},\quad \lambda_{kmpi}\le u_{kmp}-u_{km,p+1},\quad \lambda_{kmpi}\ge y_{kmpi}+u_{kmp}-u_{km,p+1}-1,
+\end{equation}
+\[
+  \forall k\in K,\ m\in H,\ p=1,\ldots,P_{\max}-1,\ i\in N.
+\]
+\begin{equation}
+  \lambda_{km,P_{\max},i}=y_{km,P_{\max},i}, \qquad \forall k\in K,\ m\in H,\ i\in N.
+\end{equation}
+
+\subsubsection{Pickup--delivery (C2)}
+
+Pickup và delivery của cùng một cặp phải nằm trên cùng một truck, nhưng có thể nằm
+ở hai chuyến khác nhau:
+\begin{equation}
+  \sum_{m\in H}\sum_{p\in P}y_{kmp p'} = \sum_{m\in H}\sum_{p\in P}y_{kmp \ell},
+  \qquad \forall k\in K,\ (p',\ell)\in\mathcal A.
+\end{equation}
+Pickup phải đứng trước delivery trong toàn hành trình của truck. Thứ tự toàn hành
+trình của vị trí $(m,p)$ được tính bởi $(m-1)P_{\max}+p$:
+\begin{equation}
+\begin{aligned}
+  &\sum_{m\in H}\sum_{p\in P}\big((m-1)P_{\max}+p\big)y_{kmp p'}+1
+  \le
+  \sum_{m\in H}\sum_{p\in P}\big((m-1)P_{\max}+p\big)y_{kmp\ell}\\
+  &\quad +M\left(1-\sum_{m\in H}\sum_{p\in P}y_{kmp p'}\right),
+  \qquad \forall k\in K,\ (p',\ell)\in\mathcal A.
+\end{aligned}
+\end{equation}
+
+\subsubsection{Nguồn hàng cho khách C1}
+
+\begin{equation}
+  a_{kmi}+\sum_{p\in P}b_{kmpi} = \sum_{p\in P}y_{kmpi}, \qquad \forall k\in K,\ m\in H,\ i\in N^D.
+\end{equation}
+Do cả nguồn hàng và lần phục vụ đều mang cùng chỉ số chuyến $m$, phương trình trên
+buộc mọi kiện C1 được chất tại depot hoặc nhận từ drone phải được giao trong chính
+chuyến truck đó; kiện C1 không thể được mang qua một lần quay về depot.
+\begin{equation}
+  b_{kmpi}\le \sum_{\substack{q\in P\\q\ge p}} y_{kmqi}, \qquad \forall k\in K,\ m\in H,\ p\in P,\ i\in N^D.
+\end{equation}
+\begin{equation}
+  b_{kmpi}\le \rho_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P,\ i\in N^D.
+\end{equation}
+\begin{equation}
+  \rho_{kmp}\le u_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+
+\subsubsection{Drone capacity và gán chuyến drone}
+
+\begin{equation}
+  \sum_{i\in N^D}q_i b_{kmpi}\le Q_D\rho_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  \sum_{d\in R}\sum_{s\in S}\sum_{j\in N} w_{dskmpj} = \rho_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  w_{dskmpj}\le y_{kmpj}, \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P,\ j\in N.
+\end{equation}
+\begin{equation}
+  \sum_{k\in K}\sum_{m\in H}\sum_{p\in P}\sum_{j\in N}w_{dskmpj} =\eta_{ds}, \qquad \forall d\in R,\ s\in S.
+\end{equation}
+\begin{equation}
+  \eta_{d,s+1}\le \eta_{ds}, \qquad \forall d\in R,\ s=1,\ldots,S_{\max}-1.
+\end{equation}
+
+\subsubsection{Truck capacity và tải chuyển tiếp giữa các chuyến}
+
+\begin{equation}
+  L_{k10}=\sum_{i\in N^D}q_i a_{k1i}, \qquad \forall k\in K.
+\end{equation}
+Từ chuyến thứ hai trở đi, tải đầu chuyến gồm hàng pickup C2 còn trên truck từ chuyến
+trước cộng với hàng C1 mới được chất ở depot:
+\begin{equation}
+  L_{km0}=L^{end}_{k,m-1}+\sum_{i\in N^D}q_i a_{kmi}, \qquad \forall k\in K,\ m=2,\ldots,H_{\max}.
+\end{equation}
+\begin{equation}
+  L_{km0}\le Q_Tg_{km}, \qquad \forall k\in K,\ m\in H.
+\end{equation}
+Tải truck sau khi hoàn tất phục vụ và bàn giao tại vị trí $p$:
+\begin{equation}
+  L_{kmp} = L_{km,p-1} +\sum_{i\in N^P}q_i y_{kmpi} -\sum_{i\in N^{DL}}q_i y_{kmpi} -\sum_{i\in N^D}q_i y_{kmpi} +\sum_{i\in N^D}q_i b_{kmpi},
+\end{equation}
+\[
+  \forall k\in K,\ m\in H,\ p\in P.
+\]
+\begin{equation}
+  0\le L_{kmp}\le Q_Tu_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+Tải cuối chuyến bằng tải tại khách cuối cùng của chuyến:
+\begin{equation}
+  L^{end}_{km}\ge L_{kmp}-M(1-\lambda_{kmpi}), \qquad \forall k\in K,\ m\in H,\ p\in P,\ i\in N.
+\end{equation}
+\begin{equation}
+  L^{end}_{km}\le L_{kmp}+M(1-\lambda_{kmpi}), \qquad \forall k\in K,\ m\in H,\ p\in P,\ i\in N.
+\end{equation}
+\begin{equation}
+  0\le L^{end}_{km}\le Q_Tg_{km}, \qquad \forall k\in K,\ m\in H.
+\end{equation}
+Để cấm tường minh hàng C1 đi qua depot nhưng vẫn cho phép hàng C2 đi qua depot, tải
+cuối chuyến phải bằng đúng cân bằng pickup--delivery C2 lũy kế:
+\begin{equation}
+  L^{end}_{km} = \sum_{(p',\ell)\in\mathcal A}q_{p'}\left(\sum_{r=1}^{m}\sum_{s\in P}y_{krs p'} - \sum_{r=1}^{m}\sum_{s\in P}y_{krs\ell}\right), \qquad \forall k\in K,\ m\in H.
+\end{equation}
+Vì pickup và delivery cùng truck và pickup đứng trước delivery, vế phải không âm.
+Nếu $L^{end}_{km}>0$, toàn bộ phần tải đó là hàng C2 đã pickup nhưng chưa tới
+delivery tương ứng. Do đó C2 có thể được giữ qua depot, còn C1 thì không.
+
+\subsubsection{Thời gian truck}
+
+\begin{equation}
+  y_{km1i}=1\ \Longrightarrow\ A_{km1}=T^0_{km}+t^T_{0i}, \qquad \forall k\in K,\ m\in H,\ i\in N.
+\end{equation}
+\begin{equation}
+  z_{kmpij}=1\ \Longrightarrow\ A_{km,p+1}=D_{kmp}+t^T_{ij}, \qquad \forall k\in K,\ m\in H,\ p=1,\ldots,P_{\max}-1,\ i,j\in N.
+\end{equation}
+\begin{equation}
+  D_{kmp}\ge A_{kmp}+s_Tu_{kmp}, \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+Khi không có drone resupply tại vị trí đang dùng, thời điểm rời được khóa đúng bằng
+thời điểm đến cộng service time:
+\begin{equation}
+  D_{kmp}\le A_{kmp}+s_T+M\rho_{kmp}+M(1-u_{kmp}), \qquad \forall k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  D_{kmp}\ge F^{arr}_{ds}+\delta_m -M\left(1-\sum_{j\in N}w_{dskmpj}\right), \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P.
+\end{equation}
+\begin{equation}
+  \lambda_{kmpi}=1\ \Longrightarrow\ B_{km}=D_{kmp}+t^T_{i0}, \qquad \forall k\in K,\ m\in H,\ p\in P,\ i\in N.
+\end{equation}
+Chuyến đầu tiên không cộng thời gian bốc dỡ truck tại depot:
+\begin{equation}
+  T^0_{k1}\ge r_i a_{k1i}, \qquad \forall k\in K,\ i\in N^D.
+\end{equation}
+Từ chuyến thứ hai, truck chỉ rời depot sau khi chuyến trước kết thúc và đã bốc dỡ:
+\begin{equation}
+  T^0_{km}\ge B_{k,m-1}+\delta_T-M(1-g_{km}), \qquad \forall k\in K,\ m=2,\ldots,H_{\max}.
+\end{equation}
+Release date cho hàng C1 chất lên truck tại depot đầu chuyến:
+\begin{equation}
+  T^0_{km}\ge r_i a_{kmi}, \qquad \forall k\in K,\ m\in H,\ i\in N^D.
+\end{equation}
+
+\subsubsection{Release date, drone và đồng bộ}
+
+\begin{equation}
+  F^{dep}_{ds}\ge r_i+\delta_d -M\left(1-b_{kmpi}\right) -M\left(1-\sum_{j\in N}w_{dskmpj}\right), \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P,\ i\in N^D.
+\end{equation}
+\begin{equation}
+  F^{dep}_{d,s+1}\ge F^{ret}_{ds}+\delta_d-M(1-\eta_{d,s+1}), \qquad \forall d\in R,\ s=1,\ldots,S_{\max}-1.
+\end{equation}
+\begin{equation}
+  w_{dskmpj}=1\ \Longrightarrow\ F^{arr}_{ds}=F^{dep}_{ds}+t^D_{0j}, \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P,\ j\in N.
+\end{equation}
+\begin{equation}
+  w_{dskmpj}=1\ \Longrightarrow\ F^{ret}_{ds}=F^{arr}_{ds}+\delta_m+t^D_{j0}, \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P,\ j\in N.
+\end{equation}
+Drone không cần chờ truck tại điểm hẹn. Vì vậy nếu chuyến bay $(d,s)$ được gán
+cho điểm hẹn $(k,m,p)$, thời điểm drone tới điểm hẹn không được sớm hơn thời điểm
+truck tới vị trí đó:
+\begin{equation}
+  F^{arr}_{ds}\ge A_{kmp}-M\left(1-\sum_{j\in N}w_{dskmpj}\right), \qquad \forall d\in R,\ s\in S,\ k\in K,\ m\in H,\ p\in P.
+\end{equation}
+Truck có thể chờ drone tại điểm hẹn, nên mô hình không dùng tham số giới hạn thời
+gian chờ; nghiệm tối ưu sẽ chọn $F^{dep}_{ds}$ phù hợp với release date, thứ tự
+chuyến bay của drone, và thời điểm truck tới điểm hẹn.
+\begin{equation}
+  F^{ret}_{ds}-F^{dep}_{ds}\le E+M(1-\eta_{ds}), \qquad \forall d\in R,\ s\in S.
+\end{equation}
+
+\subsubsection{$C_{\max}$}
+
+\begin{equation}
+  C_{\max}\ge B_{km}, \qquad \forall k\in K,\ m\in H.
+\end{equation}
+\begin{equation}
+  C_{\max}\ge F^{ret}_{ds}, \qquad \forall d\in R,\ s\in S.
+\end{equation}
+
+\subsubsection{Miền giá trị}
+
+\begin{align*}
+y_{kmpi},u_{kmp},g_{km},z_{kmpij},\lambda_{kmpi}, a_{kmi},b_{kmpi},\rho_{kmp},w_{dskmpj},\eta_{ds} &\in\{0,1\},\\
+T^0_{km},A_{kmp},D_{kmp},B_{km}, F^{dep}_{ds},F^{arr}_{ds},F^{ret}_{ds},L_{kmp},L^{end}_{km},C_{\max} &\ge0.
+\end{align*}
+
+\subsection{Ghi chú triển khai}
+
+Mô hình trên và file \texttt{MILP.py} cùng sử dụng truck nhiều chuyến, truck và drone
+có capacity, C1 phải được nhận và giao trong cùng chuyến truck, hàng pickup C2 có thể
+được giữ qua depot để giao ở chuyến sau, và mỗi chuyến drone chỉ có một rendezvous.
+Khi CPLEX dừng ở time limit, incumbent có thể chứa slack trong các biến thời gian dù
+quyết định route/load/resupply đã cố định. Vì vậy code cố định toàn bộ biến nhị phân
+của incumbent và giải lại bài toán thời gian liên tục trước khi báo objective hoặc so
+sánh với decoder heuristic.
+
+%==============================================================================
+\section{Thuật toán Giải}
+\label{sec:algorithm}
+%==============================================================================
+
+\subsection{Tổng quan: kiến trúc hai lớp TS-ALNS-LSP}
+
+Thuật toán heuristic hiện tại (\texttt{pdp\_tabu\_main.cpp}, \texttt{pdp\_lsp.cpp},
+\texttt{pdp\_alns.cpp}, \texttt{pdp\_lb.cpp}) \emph{không phải} GA+Tabu như mô tả
+trong các phiên bản báo cáo trước, mà là một kiến trúc \textbf{Tabu Search thích nghi
+(Adaptive Tabu Search -- ATS)} hai lớp, tách biệt quyết định \emph{thứ tự phục vụ
+khách hàng} khỏi quyết định \emph{nguồn hàng/resupply}:
 \begin{itemize}
-    \item $P_i$: Xác suất của toán tử $i$
-    \item $SR_i$: Success rate của toán tử $i$
-    \item $\overline{SR}$: Success rate trung bình
-    \item $\alpha$: Learning rate
+    \item \textbf{Lớp 1 -- Routing (Tabu Search + ALNS escape):} làm việc trên
+    \texttt{VRPSolution} -- chỉ thứ tự khách hàng của mỗi truck, không chứa thông tin
+    loading. Không gian tìm kiếm là hoán vị khách hàng.
+    \item \textbf{Lớp 2 -- Loading Subproblem (LSP, CP-SAT):} với route truck đã cố
+    định ở Lớp 1, giải một bài toán con bằng CP-SAT (OR-Tools) để quyết định mỗi
+    kiện C1 được chất ở depot, hay được drone resupply tại vị trí nào, nhằm
+    tối thiểu $C_{\max}$ cho route đó.
 \end{itemize}
+Việc tách lớp này cho phép Lớp 1 dùng một \textbf{cận dưới (lower bound)} rẻ để
+sàng lọc hầu hết các move trước khi gọi Lớp 2 (tốn kém hơn nhiều vì phải giải CP-SAT).
 
-Mutation rate cũng được điều chỉnh dựa trên stagnation:
+\subsection{Cận dưới (Lower Bound) cho một route}
+
+Với route $\chi_v = (c_1, \ldots, c_m)$ của truck $v$, cận dưới thời điểm truck đến
+khách $c_k$ được tính truyền tiến (\texttt{pdp\_lb.cpp}):
 \begin{equation}
-    mutation\_rate = \min(0.5, base\_rate \times 1.1^{stagnation})
+  \ell_i(c) = r_c + \min\big(\delta_d + t^D_{0c},\; t^T_{0c}\big) + s_T
+  \qquad\text{(cận dưới tại khách đầu tiên, có thể nhận hàng bằng drone hoặc truck)}
 \end{equation}
+\begin{equation}
+  \ell_i(c_k) = \max\big(\ell_i(c_k),\; \ell_i(c_{k-1}) + t^T_{c_{k-1}c_k}\big),
+  \qquad k = 2, \ldots, m,
+\end{equation}
+\begin{equation}
+  LB(\chi_v) = \ell_i(c_m) + t^T_{c_m 0}.
+\end{equation}
+Cận dưới toàn nghiệm là $LB(\chi) = \max_v LB(\chi_v)$. Cận dưới này được dùng
+để: (i) chọn truck "bottleneck" (route có LB lớn nhất) làm ưu tiên tìm move; (ii)
+tính ngưỡng chấp nhận move; (iii) làm \texttt{ub\_cutoff} để CP-SAT dừng sớm khi
+không thể cải thiện nghiệm tốt nhất.
 
-\subsection{Tabu Search}
-
-Khi GA không cải thiện sau một số generation (threshold = 5), Tabu Search được áp dụng:
+\subsection{Lớp 1: Tabu Search thích nghi}
 
 \begin{algorithm}[H]
-\caption{Tabu Search}
+\caption{Adaptive Tabu Search (Lớp 1 -- routing)}
 \begin{algorithmic}[1]
-\STATE \textbf{Input:} Initial solution $s$, Tabu tenure, Max iterations
-\STATE \textbf{Output:} Best solution found
-\STATE
-\STATE $best \leftarrow s$
-\STATE $tabuList \leftarrow \emptyset$
-\STATE
-\FOR{$iter = 1$ to $maxIter$}
-    \STATE Generate neighborhood $N(s)$ using moves
-    \STATE Find best non-tabu move or aspiration move
-    \STATE Apply move, update $s$
-    \STATE Update tabu list
-    \IF{$f(s) < f(best)$}
-        \STATE $best \leftarrow s$
+\STATE \textbf{Input:} $\chi_0$ (VRP khởi tạo), cấu hình \texttt{TSConfig}
+\STATE $\chi^\star \leftarrow \chi_0$;\quad $\chi \leftarrow \chi_0$
+\STATE $(z^\star, LSP^\star) \leftarrow$ \textsc{EvaluateRoutes}$(\chi^\star)$ \COMMENT{gọi Lớp 2}
+\STATE $LB^\star \leftarrow LB(\chi^\star)$;\quad $tabu \leftarrow \emptyset$;\quad $w_{\text{op}} \leftarrow (1,1,1)$ \COMMENT{RELOCATE, SWAP, 2-OPT}
+\WHILE{chưa hết \texttt{time\_limit\_sec}}
+    \STATE $\theta \sim \mathcal{U}(\theta_{lo}, \theta_{hi})$ \COMMENT{tenure ngẫu nhiên hoá, $\theta_{base}=\mathrm{round}(5\sqrt{n})$ [Taillard 1993]}
+    \STATE $\varphi \leftarrow \min(1, \text{stagnation}/\eta_{\max})$;\quad $\tau \leftarrow (1-\varphi)z^\star + \varphi\, LB^\star$
+    \STATE chọn toán tử $op$ theo roulette-wheel trên $w_{\text{op}}$
+    \STATE tìm move tốt nhất của $op$ trên truck "bottleneck" (LB lớn nhất) trước, rồi các truck còn lại
+    \STATE \textbf{nếu} không tìm được move, thử lần lượt 2 toán tử còn lại (fallback)
+    \STATE move được nhận nếu $LB(\chi') < z^\star$ (aspiration) hoặc ($\neg$tabu và $LB(\chi') < \tau$)
+    \IF{tìm được move $m^\star$}
+        \STATE $\chi \leftarrow \chi \oplus m^\star$;\quad $tabu[m^\star] \leftarrow iter+\theta$
+        \STATE $(z, LSP) \leftarrow$ \textsc{EvaluateRoutes}$(\chi,\ \text{cutoff}=z^\star-\varepsilon)$ \COMMENT{chỉ chấp nhận nếu $< z^\star-\varepsilon$}
+        \IF{$LSP$ khả thi và $z < z^\star$}
+            \STATE $z^\star \leftarrow z$;\ $\chi^\star \leftarrow \chi$;\ $LB^\star \leftarrow LB(\chi^\star)$;\ stagnation $\leftarrow 0$;\ score $\leftarrow 3$
+        \ELSE
+            \STATE stagnation++;\ score $\leftarrow 1$
+        \ENDIF
+        \STATE cập nhật $w_{\text{op}}[op] \leftarrow \max(0.05,\ (1-\rho)w_{\text{op}}[op] + \rho\cdot\text{score})$ \COMMENT{$\rho=0.1$}
+    \ELSE
+        \STATE stagnation++;\ cập nhật $w_{\text{op}}[op]$ với score $=0$
     \ENDIF
-\ENDFOR
-\STATE
-\RETURN $best$
+    \IF{stagnation $\ge \eta_{\max}$ (mặc định 150)}
+        \STATE gọi \textsc{ALNSEscape}$(\chi^\star)$ (xem Thuật toán~\ref{alg:alns}); $tabu \leftarrow \emptyset$;\ stagnation $\leftarrow 0$
+    \ENDIF
+    \IF{không cải thiện toàn cục trong 500 iteration liên tiếp}
+        \STATE ép stagnation $=\eta_{\max}$ để kích hoạt ALNS escape ngay (restart) [Sacramento et al., 2019]
+    \ENDIF
+\ENDWHILE
+\RETURN $\chi^\star, z^\star, LSP^\star$
 \end{algorithmic}
 \end{algorithm}
+
+\textbf{3 toán tử lân cận (neighbourhood moves):} RELOCATE (chuyển 1 khách sang vị
+trí/truck khác), SWAP (hoán đổi 2 khách, có thể khác truck), 2-OPT (đảo một đoạn
+trong cùng route). Khách loại \texttt{DL} (delivery của cặp C2) không bao giờ bị
+RELOCATE/SWAP trực tiếp -- di chuyển node \texttt{P} tương ứng sẽ kéo theo vị trí hợp
+lệ của \texttt{DL}; mọi move được kiểm tra lại ràng buộc tiền tố C2 (pickup trước
+delivery, cùng truck) trước khi được xem xét.
+
+\subsection{Lớp 2: Loading Subproblem (CP-SAT)}
+
+Với route cố định, \texttt{pdp\_lsp.cpp} xây dựng một mô hình CP-SAT nhỏ hơn nhiều
+so với MILP đầy đủ (không còn biến định tuyến $y, z$), chỉ còn quyết định
+\textbf{3 cơ chế nạp hàng} cho mỗi kiện C1:
+\begin{enumerate}
+    \item \textbf{Slot 0} -- chất tại depot đầu chuyến ($a_{kmi}$ trong MILP);
+    \item \textbf{RS slot} tại vị trí $(v,k)$ -- drone resupply tại vị trí đó
+    ($b_{kmpi}$ trong MILP);
+    \item \textbf{DR slot} tại vị trí $(v,k)$, $k\ge 1$ -- truck quay lại depot giữa
+    chừng trước vị trí đó để nhận hàng.
+\end{enumerate}
+Vì truck trong lớp này được coi là \emph{không giới hạn tải} (giả định đơn giản hoá
+của tầng heuristic, khác với MILP đầy đủ có $Q_T$), ràng buộc chính chỉ là release
+date: một kiện chỉ được nạp (ở bất kỳ cơ chế nào) sau thời điểm $r_i$. Quy trình giải:
+\begin{enumerate}
+    \item \texttt{greedyLoading}: chất toàn bộ C1 tại depot (luôn khả thi), dùng làm
+    \emph{warm start} (\texttt{AddHint}) cho CP-SAT;
+    \item \texttt{solveLSP}: CP-SAT tìm cách gán lại một số kiện sang RS/DR để giảm
+    $C_{\max}$, với \texttt{cutoff\_sec} (mặc định 3s/lần gọi) và \texttt{ub\_cutoff}
+    = $z^\star - \varepsilon$ để dừng sớm nếu không thể cải thiện nghiệm tốt nhất
+    hiện tại;
+    \item \texttt{evaluateRoutes} = \texttt{greedyLoading} + \texttt{solveLSP}, trả
+    về \texttt{LSPResult} (khả thi hay không, $C_{\max}$, và \texttt{SolutionEncoding}
+    đầy đủ nếu giải được).
+\end{enumerate}
+
+\subsection{ALNS escape (thoát cục bộ)}
+
+\begin{algorithm}[H]
+\caption{ALNS escape (gọi khi Tabu Search trì trệ)}\label{alg:alns}
+\begin{algorithmic}[1]
+\STATE $n_{remove} \sim \mathcal{U}(0.15n,\ 0.35n)$ [Ropke \& Pisinger, 2006]
+\FOR{$t = 1$ đến $n_{\text{alns\_escape}}$ (mặc định 5)}
+    \STATE chọn toán tử phá (destroy) $d$ và sửa (repair) $r$ theo roulette-wheel
+    \STATE $\chi' \leftarrow r(d(\chi^\star, n_{remove}))$
+    \STATE \textbf{nếu} $\chi'$ vi phạm tiền tố C2 thì bỏ qua lần thử này
+    \STATE $(z', LSP') \leftarrow$ \textsc{EvaluateRoutes}$(\chi',\ \text{cutoff}=z^\star-\varepsilon)$
+    \IF{$LSP'$ khả thi và $z' < z^\star$}
+        \STATE $z^\star \leftarrow z'$;\ $\chi^\star \leftarrow \chi'$;\ score $\leftarrow 2$ (new best)
+    \ELSIF{$LSP'$ khả thi và $z' < 1.05\cdot z^\star$}
+        \STATE score $\leftarrow 1$ (chấp nhận nhẹ)
+    \ELSE
+        \STATE score $\leftarrow 0$
+    \ENDIF
+    \STATE cập nhật trọng số $d, r$ theo $w \leftarrow (1-\rho)w + \rho\cdot\{0.5,1.0,2.0\}[\text{score}]$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+\textbf{3 toán tử phá (destroy):}
+\begin{enumerate}
+    \item \textit{Random segment}: xoá một đoạn liên tiếp ngẫu nhiên trên 1 truck;
+    \item \textit{Worst removal}: xoá các khách có "chi phí lệch tuyến" (detour cost
+    $t(prev,n){+}t(n,next){-}t(prev,next)$) lớn nhất, có thêm nhiễu ngẫu nhiên trong
+    top $3\times n_{remove}$ để tránh luôn chọn đúng 1 tập;
+    \item \textit{Related removal}: chọn 1 khách ngẫu nhiên làm "hạt giống", xoá thêm
+    các khách gần nhất về khoảng cách (Shaw removal đơn giản hoá).
+\end{enumerate}
+\textbf{2 toán tử sửa (repair):} \textit{Greedy insert} (chèn từng khách bị xoá vào
+vị trí rẻ nhất, xử lý C1 trước rồi C2) và \textit{Regret-2 insert} (ưu tiên chèn
+khách có "regret" lớn nhất -- chênh lệch giữa vị trí chèn tốt nhất và tốt nhì -- để
+tránh kẹt các khách khó chèn về sau). Cả hai đều tôn trọng ràng buộc C2 (P phải đã có
+trong route trước khi chèn DL tương ứng).
+
+\subsection{Tổng kết tham số mặc định (\texttt{TSConfig})}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+Tham số & Giá trị mặc định / ý nghĩa\\
+\midrule
+\texttt{eta\_max} & 150 -- số iteration trì trệ trước khi kích hoạt ALNS escape\\
+\texttt{no\_improve\_limit} & 500 -- số iteration không cải thiện toàn cục trước khi ép restart\\
+\texttt{n\_alns\_escape} & 5 -- số lần thử destroy/repair mỗi lần escape\\
+\texttt{cutoff\_eps} ($\varepsilon$) & 0.5 -- chỉ chấp nhận LSP nếu $z < z^\star-\varepsilon$\\
+\texttt{lsp\_cutoff} & 3.0s -- thời gian CP-SAT tối đa mỗi lần gọi\\
+\texttt{time\_limit\_sec} & ngân sách tổng theo wall-clock (2.5 phút bộ nhỏ, 60 phút bộ lớn)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\emph{Ghi chú:} kiến trúc và các tham số trên bám theo khung Adaptive Tabu Search
+được đề xuất trong Tran et al. (2026) -- xem mục~\ref{sec:related-work}. Tuy nhiên,
+khác với mô hình VRP-MRDR \emph{multi-rendezvous} của bài báo đó, Lớp 2 hiện tại
+(\texttt{pdp\_lsp.cpp}) chỉ gán \textbf{một} điểm hẹn cho mỗi chuyến bay drone (RS
+slot), khớp với mô hình \emph{one-rendezvous} ở mục~2 chứ chưa hỗ trợ một drone tiếp
+tế tuần tự nhiều truck trong cùng một chuyến bay.
 
 %==============================================================================
 \section{Hàm Decode - Chuyển đổi Sequence thành Solution}
@@ -637,9 +992,12 @@ Chương trình đã đạt được các mục tiêu đề ra:
 \end{enumerate}
 
 \subsection{Hướng phát triển}
+\label{sec:future-work}
 
 \begin{enumerate}
-    \item Mở rộng sang mô hình Multiple-Rendezvous
+    \item Mở rộng sang mô hình Multiple-Rendezvous (VRP-MRDR, Tran et al. 2026) -- cho
+    phép một drone tiếp tế tuần tự nhiều truck trong cùng một chuyến bay, thay vì chỉ
+    một điểm hẹn như hiện tại
     \item Tích hợp Machine Learning để dự đoán operator hiệu quả
     \item Parallelization cho large-scale instances
     \item Thêm các ràng buộc thực tế: time windows, traffic, weather
@@ -650,10 +1008,27 @@ Chương trình đã đạt được các mục tiêu đề ra:
 %==============================================================================
 
 \begin{enumerate}
-    \item Genetic Algorithms for Optimization Problems - Holland, J.H. (1992)
-    \item Tabu Search - Glover, F. and Laguna, M. (1997)
-    \item Vehicle Routing Problems with Drones - Recent Advances
-    \item Pickup and Delivery Problems - A Survey
+    \item Pina-Pardo, J.C., Silva, F., Smith, A.E. (2021). The traveling salesman
+    problem with release dates and drone resupply. \emph{Computers \& Operations
+    Research}, 129, 105170.
+    \item Pina-Pardo, J.C., Silva, F., Smith, A.E., Gatica, R.A. (2024a). Dynamic
+    vehicle routing problem with drone resupply. \emph{Transportation Research Part
+    C: Emerging Technologies}, 162, 104611.
+    \item Pina-Pardo, J.C., Silva, F., Smith, A.E., Gatica, R.A. (2024b). Fleet
+    resupply by drones for last-mile delivery. \emph{European Journal of Operational
+    Research}, 316(1), 168--182.
+    \item Tran, T.H., Nguyen, P.K., Binh, H.T.T., Tran, H.H., Nguyen, S. (2026).
+    Coordinated truck routing and multi-rendezvous drone resupply under shipment
+    release dates. \emph{Transportation Research Part E: Logistics and
+    Transportation Review}, 215, 105082.
+    \item Taillard, E. (1993). Parallel iterative search methods for vehicle routing
+    problems. \emph{Networks}, 23(8), 661--673.
+    \item Ropke, S., Pisinger, D. (2006). An adaptive large neighborhood search
+    heuristic for the pickup and delivery problem with time windows.
+    \emph{Transportation Science}, 40(4), 455--472.
+    \item Sacramento, D., Pisinger, D., Ropke, S. (2019). An adaptive large
+    neighborhood search metaheuristic for the vehicle routing problem with drones.
+    \emph{Transportation Research Part C: Emerging Technologies}, 102, 289--315.
 \end{enumerate}
 
 \end{document}

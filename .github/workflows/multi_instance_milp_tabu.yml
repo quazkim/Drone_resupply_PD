@@ -18,7 +18,7 @@
 # Instance/Instance/U_10_*_pd.txt,Instance/Instance/U_15_*_pd.txt,Instance/Instance/U_20_*_pd.txt
 # A final job joins lightweight result artifacts into comparison/milp_vs_tabu.csv.
 # Paper comparisons use the local Results CSVs and verified original customer data.
-name: Instances - MILP and Tabu (1 hour per solver)
+name: Instances - MILP and Tabu (5 hours per solver)
 
 on:
   workflow_dispatch:
@@ -192,9 +192,9 @@ jobs:
     name: '${{ matrix.solver }} - ${{ matrix.instance }}'
     needs: prepare
     runs-on: ubuntu-22.04
-    # Setup/export are outside the solver's 3600-second budget. Reserve time
+    # Setup/export are outside the solver's 18000-second budget. Reserve time
     # for a 20-customer model export and for publishing results after a failure.
-    timeout-minutes: 150
+    timeout-minutes: 358
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.prepare.outputs.max_parallel_jobs) }}
@@ -206,7 +206,7 @@ jobs:
       DEPOT: ${{ inputs.depot }}
       RUN_SEED: ${{ inputs.seed }}
       SOLVER: ${{ matrix.solver }}
-      TIME_LIMIT: '3600'
+      TIME_LIMIT: '18000'
       OR_TOOLS_URL: https://github.com/google/or-tools/releases/download/v9.11/or-tools_amd64_ubuntu-22.04_cpp_v9.11.4210.tar.gz
       PYTHONUNBUFFERED: '1'
     defaults:
@@ -355,14 +355,14 @@ jobs:
 
       - name: Export the existing MILP model without solving
         if: matrix.solver == 'MILP'
-        timeout-minutes: 45
+        timeout-minutes: 20
         run: |
           python -u MILP.py "$INSTANCE_PATH" --depot "$DEPOT" --time "$TIME_LIMIT" \
             --no-solve --export-lp results/milp_model.lp 2>&1 | tee results/model_build.log
 
-      - name: Solve MILP with all visible CPUs and 3600-second limit
+      - name: Solve MILP with all visible CPUs and 18000-second limit
         if: matrix.solver == 'MILP'
-        timeout-minutes: 65
+        timeout-minutes: 310
         run: |
           # CLI avoids MILP.py's fixed Python threads=8 without modifying code.
           cat > results/cplex_commands.txt <<EOF
@@ -378,7 +378,7 @@ jobs:
           EOF
           set +e
           started=$(date +%s)
-          timeout --signal=TERM --kill-after=30s 3780s \
+          timeout --signal=TERM --kill-after=30s 18180s \
             stdbuf -oL -eL "$CPLEX_BIN" < results/cplex_commands.txt 2>&1 | tee results/milp.log
           codes=("${PIPESTATUS[@]}")
           set -e
@@ -388,9 +388,9 @@ jobs:
           # Semantic result checks run in the summary step, including when this
           # process exits 0 on a CPLEX license/model error.
 
-      - name: Run existing Tabu solver with 3600-second budget
+      - name: Run existing Tabu solver with 18000-second budget
         if: matrix.solver == 'Tabu'
-        timeout-minutes: 65
+        timeout-minutes: 310
         run: |
           case "$DEPOT" in
             center) depot_mode=0 ;;
@@ -400,7 +400,7 @@ jobs:
           set +e
           started=$(date +%s)
           # Grace allows an in-flight LSP/ALNS call and final validation to finish.
-          timeout --signal=TERM --kill-after=30s 3780s \
+          timeout --signal=TERM --kill-after=30s 18180s \
             stdbuf -oL -eL ./pdp_solver "$INSTANCE_PATH" --depot "$depot_mode" \
               --run "$RUN_SEED" --time "$TIME_LIMIT" --threads "$CPU_COUNT" \
               --encoding-output results/tabu_encoding.txt 2>&1 | tee results/tabu.log
@@ -460,7 +460,8 @@ jobs:
               'normalized_input_sha256': os.environ.get('NORMALIZED_SHA256'),
               'commit': os.environ['GITHUB_SHA'], 'depot': os.environ['DEPOT'],
               'customers': os.environ.get('CUSTOMERS'),
-              'available_cpus': os.environ.get('CPU_COUNT'), 'time_limit_seconds': 3600,
+              'available_cpus': os.environ.get('CPU_COUNT'),
+              'time_limit_seconds': int(os.environ['TIME_LIMIT']),
               'process_seconds': int(seconds.read_text()) if seconds.exists() else None,
               'exit_code': int(code.read_text()) if code.exists() else None,
               'status': 'not_completed_or_started', 'objective': None,
@@ -496,7 +497,7 @@ jobs:
               required = [
                   f"New value for default parallel thread count: {os.environ['CPU_COUNT']}",
                   'New value for type of clock used to measure time: 2',
-                  'New value for time limit in seconds: 3600',
+                  f"New value for time limit in seconds: {os.environ['TIME_LIMIT']}",
               ]
               if any(value not in text for value in required):
                   errors.append('CPLEX did not confirm the required CPU/time settings.')
@@ -552,7 +553,7 @@ jobs:
               lines.extend(['', 'No solver log; inspect setup/build steps for errors.'])
           lines.extend(['', 'Full logs, input, model/solution and Tabu encoding are in the job artifact.',
                         'Tabu routing is sequential; CP-SAT receives the runner CPU count through --threads.',
-                        'The 3600-second solver limits exclude dependency setup and MILP model export.',
+                        'The 18000-second solver limits exclude dependency setup and MILP model export.',
                         'Audit timelines and explicit objective arithmetic are included under results/audit/.'])
           summary = '\n'.join(lines) + '\n'
           Path('results/summary.md').write_text(summary)
@@ -594,6 +595,7 @@ jobs:
       PREPARE_ARTIFACT: ${{ needs.prepare.outputs.normalized_artifact }}
       DEPOT: ${{ inputs.depot }}
       RUN_SEED: ${{ inputs.seed }}
+      TIME_LIMIT: '18000'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -826,7 +828,8 @@ jobs:
                       'instance': entry['instance'], 'solver': entry['solver'],
                       'normalized_input_sha256': entry['normalized_sha256'],
                       'depot': os.environ['DEPOT'], 'commit': os.environ['GITHUB_SHA'],
-                      'run_id': run_id, 'run_attempt': attempt, 'time_limit_seconds': 3600,
+                      'run_id': run_id, 'run_attempt': attempt,
+                      'time_limit_seconds': int(os.environ['TIME_LIMIT']),
                   }
                   if any(data.get(key) != value for key, value in expected.items()):
                       raise ValueError('Result metadata differs from the selected instance/run.')
@@ -876,7 +879,7 @@ jobs:
                   'milp_errors': '; '.join(milp.get('errors', [])),
                   'tabu_errors': '; '.join(tabu.get('errors', [])),
                   'milp_run_attempt': milp.get('run_attempt'), 'tabu_run_attempt': tabu.get('run_attempt'),
-                  'time_limit_seconds': 3600, 'commit': os.environ['GITHUB_SHA'], 'run_id': run_id,
+                  'time_limit_seconds': int(os.environ['TIME_LIMIT']), 'commit': os.environ['GITHUB_SHA'], 'run_id': run_id,
                   'normalized_input_sha256': pair['MILP']['normalized_sha256'],
               }
               row.update(paper_result(pair['MILP']))
@@ -916,7 +919,7 @@ jobs:
               'Comparison fields are blank/not_compared unless both results are usable.\n'
               'Missing objectives stay blank, never zero. Inspect statuses and errors.\n'
               'process_seconds excludes dependency setup and MILP model export.\n'
-              'Each solver keeps its 3600-second budget and existing CPU settings.\n'
+              'Each solver keeps its 18000-second budget and existing CPU settings.\n'
               'Reruns use the newest available result per solver since the prepare attempt; '
               'the two run_attempt columns identify the attempts actually used.\n'
               'Paper sources: local Results/Truck-and-Drone (Limited Drone Fleet) CSVs.\n'
